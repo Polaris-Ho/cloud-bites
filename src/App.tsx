@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { User } from '@supabase/supabase-js'
 import './App.css'
 import heroImage from './assets/hero.png'
 import { cloudConcepts } from './data/cloudConcepts'
+import { isSupabaseConfigured, supabase } from './lib/supabase'
 
 type Page = 'home' | 'study' | 'quiz' | 'review'
+type AuthMode = 'sign-in' | 'sign-up'
 
 type WrongQuiz = {
   conceptId: string
@@ -85,6 +88,14 @@ const toPercent = (value: number, total: number) =>
   total === 0 ? 0 : Math.round((value / total) * 100)
 
 function App() {
+  const [authMode, setAuthMode] = useState<AuthMode>('sign-in')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authMessage, setAuthMessage] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(() => isSupabaseConfigured)
+  const [authSubmitting, setAuthSubmitting] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
   const [page, setPage] = useState<Page>('home')
   const [completedIds, setCompletedIds] = useState<string[]>(() => readStoredValue(STORAGE_COMPLETED, []))
   const [wrongQuizzes, setWrongQuizzes] = useState<WrongQuiz[]>(() => readStoredValue(STORAGE_WRONG, []))
@@ -128,6 +139,30 @@ function App() {
   const wrongCount = wrongQuizzes.length
   const todayProgress = toPercent(todayCompleteCount, todayConcepts.length)
   const totalProgress = toPercent(totalCompleteCount, cloudConcepts.length)
+
+  useEffect(() => {
+    if (!supabase) {
+      return
+    }
+
+    let isMounted = true
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!isMounted) return
+      setUser(data.session?.user ?? null)
+      setAuthLoading(false)
+    })
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+      setAuthLoading(false)
+    })
+
+    return () => {
+      isMounted = false
+      data.subscription.unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_COMPLETED, JSON.stringify(completedIds))
@@ -258,6 +293,130 @@ function App() {
   const currentReviewItem = wrongReviewItems[reviewIndex]
   const reviewDisplayItem = showReviewResult && reviewSnapshot ? reviewSnapshot : currentReviewItem
 
+  const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setAuthError('')
+    setAuthMessage('')
+
+    if (!supabase) {
+      setAuthError('Supabase 환경변수를 확인해 주세요.')
+      return
+    }
+
+    setAuthSubmitting(true)
+    const authRequest = authMode === 'sign-in'
+      ? supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
+      : supabase.auth.signUp({ email: authEmail, password: authPassword })
+
+    const { error } = await authRequest
+    setAuthSubmitting(false)
+
+    if (error) {
+      setAuthError(error.message)
+      return
+    }
+
+    if (authMode === 'sign-up') {
+      setAuthMessage('회원가입 요청이 완료되었습니다. 이메일 확인이 필요할 수 있습니다.')
+    }
+  }
+
+  const handleSignOut = async () => {
+    if (!supabase) return
+    await supabase.auth.signOut()
+    navigate('home')
+  }
+
+  const renderAuth = () => (
+    <main className="app-shell auth-shell">
+      <section className="auth-card">
+        <div className="auth-copy">
+          <span className="brand-mark">CS</span>
+          <span className="eyebrow">Cloud Bites</span>
+          <h1>로그인하고 학습 기록을 이어가세요.</h1>
+          <p>Supabase Auth를 통해 개인별 학습 기록과 오답 복습을 저장할 준비를 합니다.</p>
+        </div>
+
+        <form className="auth-form" onSubmit={handleAuthSubmit}>
+          <div className="auth-mode" role="tablist" aria-label="인증 모드">
+            <button
+              type="button"
+              className={authMode === 'sign-in' ? 'mode-tab is-active' : 'mode-tab'}
+              onClick={() => {
+                setAuthMode('sign-in')
+                setAuthError('')
+                setAuthMessage('')
+              }}
+            >
+              로그인
+            </button>
+            <button
+              type="button"
+              className={authMode === 'sign-up' ? 'mode-tab is-active' : 'mode-tab'}
+              onClick={() => {
+                setAuthMode('sign-up')
+                setAuthError('')
+                setAuthMessage('')
+              }}
+            >
+              회원가입
+            </button>
+          </div>
+
+          {!isSupabaseConfigured && (
+            <div className="feedback-box is-incorrect">
+              <strong>Supabase 설정이 필요합니다</strong>
+              <p>.env.local의 VITE_SUPABASE_URL과 VITE_SUPABASE_ANON_KEY 값을 확인해 주세요.</p>
+            </div>
+          )}
+
+          <label className="field-label">
+            이메일
+            <input
+              type="email"
+              value={authEmail}
+              onChange={(event) => setAuthEmail(event.target.value)}
+              placeholder="name@example.com"
+              required
+            />
+          </label>
+
+          <label className="field-label">
+            비밀번호
+            <input
+              type="password"
+              value={authPassword}
+              onChange={(event) => setAuthPassword(event.target.value)}
+              placeholder="6자 이상 입력"
+              minLength={6}
+              required
+            />
+          </label>
+
+          {authError && (
+            <div className="auth-alert is-error">{authError}</div>
+          )}
+          {authMessage && (
+            <div className="auth-alert is-success">{authMessage}</div>
+          )}
+
+          <button type="submit" className="primary-button" disabled={authSubmitting || !isSupabaseConfigured}>
+            {authSubmitting ? '처리 중...' : authMode === 'sign-in' ? '로그인' : '회원가입'}
+          </button>
+        </form>
+      </section>
+    </main>
+  )
+
+  const renderAuthLoading = () => (
+    <main className="app-shell auth-shell">
+      <section className="auth-card is-loading">
+        <span className="brand-mark">CS</span>
+        <p>로그인 상태를 확인하고 있습니다.</p>
+      </section>
+    </main>
+  )
+
   const renderHeader = () => (
     <header className="app-header">
       <button type="button" className="brand-button" onClick={() => navigate('home')}>
@@ -281,6 +440,13 @@ function App() {
           </button>
         ))}
       </nav>
+
+      <div className="user-menu">
+        <span>{user?.email}</span>
+        <button type="button" className="secondary-button compact" onClick={handleSignOut}>
+          로그아웃
+        </button>
+      </div>
     </header>
   )
 
@@ -589,6 +755,14 @@ function App() {
         </div>
       </div>
     )
+  }
+
+  if (authLoading) {
+    return renderAuthLoading()
+  }
+
+  if (!user) {
+    return renderAuth()
   }
 
   return (
